@@ -1,36 +1,84 @@
-# This is a basic workflow to help you get started with Actions
+name: Deploy to Environments
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches:
+      - 'v2024.*'  # Automatically trigger on version branches
+    tags:
+      - 'v2024.*'  # Automatically trigger on version tags
 
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      version_branch:
+        description: 'Version branch to deploy (e.g., v2024.18)'
+        required: true
+      environment_name:
+        description: 'Target environment (e.g., dev, stg, prod)'
+        required: true
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  deploy:
+    name: Deploy to ${{ inputs.environment_name }} environment
     runs-on: ubuntu-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    # Map environments in GitHub (dev, stg, prod)
+    environment:
+      name: ${{ inputs.environment_name }}
+
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ github.ref }}
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Set version and environment
+        id: set_envs
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION_BRANCH="${{ inputs.version_branch }}"
+            ENVIRONMENT="${{ inputs.environment_name }}"
+          elif [ "${{ github.ref_type }}" == "tag" ]; then
+            VERSION_BRANCH="${{ github.ref_name }}"
+            ENVIRONMENT="prod"  # Default to prod for tags
+          else
+            VERSION_BRANCH="${{ github.ref_name }}"
+            ENVIRONMENT="dev"  # Default to dev for branch pushes
+          fi
+          echo "Deploying $VERSION_BRANCH to $ENVIRONMENT"
+          echo "::set-output name=version_branch::$VERSION_BRANCH"
+          echo "::set-output name=environment::$ENVIRONMENT"
+
+      - name: Deploy to environment
+        run: |
+          echo "Deploying ${{ steps.set_envs.outputs.version_branch }} to ${{ steps.set_envs.outputs.environment }} environment"
+          # Add your actual deployment logic here (SSH, deploy script, etc.)
+
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "Deployment to ${{ steps.set_envs.outputs.environment }} successful!"
+
+  track-deployment:
+    name: Track Deployment Status
+    runs-on: ubuntu-latest
+    needs: deploy
+    environment:
+      name: ${{ steps.set_envs.outputs.environment }}
+
+    steps:
+      - name: Create Deployment
+        uses: octokit/request-action@v2.x
+        id: create_deployment
+        with:
+          route: POST /repos/${{ github.repository }}/deployments
+          environment: ${{ steps.set_envs.outputs.environment }}
+          ref: ${{ steps.set_envs.outputs.version_branch }}
+          description: "Deploying ${{ steps.set_envs.outputs.version_branch }} to ${{ steps.set_envs.outputs.environment }}"
+
+      - name: Update Deployment Status
+        uses: octokit/request-action@v2.x
+        with:
+          route: POST /repos/${{ github.repository }}/deployments/${{ steps.create_deployment.outputs.id }}/statuses
+          state: success
+          environment: ${{ steps.set_envs.outputs.environment }}
+          description: "Deployment to ${{ steps.set_envs.outputs.environment }} successful!"
