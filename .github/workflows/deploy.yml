@@ -3,82 +3,92 @@ name: Deploy to Environments
 on:
   push:
     branches:
-      - 'v2024.*'  # Automatically trigger on version branches
+      - 'dev/*'        # Dev branches
+      - 'staging/*'    # Staging branches
     tags:
-      - 'v2024.*'  # Automatically trigger on version tags
+      - 'v2024.*'      # Tags for production deployment
 
   workflow_dispatch:
     inputs:
       version_branch:
-        description: 'Version branch to deploy (e.g., v2024.18)'
+        description: 'Version branch to deploy'
         required: true
-      environment_name:
-        description: 'Target environment (e.g., dev, stg, prod)'
+      environment:
+        description: 'Target environment'
         required: true
+        default: 'dev'
 
 jobs:
   deploy:
-    name: Deploy to ${{ inputs.environment_name }} environment
+    name: Deploy to Environment
     runs-on: ubuntu-latest
 
-    # Map environments in GitHub (dev, stg, prod)
-    environment:
-      name: ${{ inputs.environment_name }}
-
     steps:
+      # Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v2
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.ref }}  # Check out the branch or tag
 
-      - name: Set version and environment
+      # Automatically set environment based on branch name or tag
+      - name: Set Environment Based on Branch
         id: set_envs
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            VERSION_BRANCH="${{ inputs.version_branch }}"
-            ENVIRONMENT="${{ inputs.environment_name }}"
-          elif [ "${{ github.ref_type }}" == "tag" ]; then
-            VERSION_BRANCH="${{ github.ref_name }}"
-            ENVIRONMENT="prod"  # Default to prod for tags
+          if [[ "${{ github.ref }}" == refs/heads/dev/* ]]; then
+            ENVIRONMENT="dev"
+          elif [[ "${{ github.ref }}" == refs/heads/staging/* ]]; then
+            ENVIRONMENT="stg"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            ENVIRONMENT="prod"
           else
-            VERSION_BRANCH="${{ github.ref_name }}"
-            ENVIRONMENT="dev"  # Default to dev for branch pushes
+            echo "Invalid environment for deployment. Exiting."
+            exit 1
           fi
-          echo "Deploying $VERSION_BRANCH to $ENVIRONMENT"
-          echo "::set-output name=version_branch::$VERSION_BRANCH"
           echo "::set-output name=environment::$ENVIRONMENT"
+          echo "::set-output name=version_branch::${{ github.ref_name }}"
 
-      - name: Deploy to environment
+      # Deploy based on environment (automatically mapped based on branch name or tag)
+      - name: Deploy to ${{ steps.set_envs.outputs.environment }} environment
         run: |
           echo "Deploying ${{ steps.set_envs.outputs.version_branch }} to ${{ steps.set_envs.outputs.environment }} environment"
-          # Add your actual deployment logic here (SSH, deploy script, etc.)
 
-      - name: Notify Success
-        if: success()
-        run: |
-          echo "Deployment to ${{ steps.set_envs.outputs.environment }} successful!"
-
-  track-deployment:
-    name: Track Deployment Status
+  manual-deploy:
+    name: Manual Deploy to Environment
     runs-on: ubuntu-latest
-    needs: deploy
-    environment:
-      name: ${{ steps.set_envs.outputs.environment }}
+
+    # This job only runs when manually triggered using workflow_dispatch
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
-      - name: Create Deployment
-        uses: octokit/request-action@v2.x
-        id: create_deployment
+      # Checkout the repository based on the manually provided branch
+      - name: Checkout repository
+        uses: actions/checkout@v2
         with:
-          route: POST /repos/${{ github.repository }}/deployments
-          environment: ${{ steps.set_envs.outputs.environment }}
-          ref: ${{ steps.set_envs.outputs.version_branch }}
-          description: "Deploying ${{ steps.set_envs.outputs.version_branch }} to ${{ steps.set_envs.outputs.environment }}"
+          ref: ${{ inputs.version_branch }}  # Check out the manually provided branch
 
-      - name: Update Deployment Status
-        uses: octokit/request-action@v2.x
-        with:
-          route: POST /repos/${{ github.repository }}/deployments/${{ steps.create_deployment.outputs.id }}/statuses
-          state: success
-          environment: ${{ steps.set_envs.outputs.environment }}
-          description: "Deployment to ${{ steps.set_envs.outputs.environment }} successful!"
+      # Manually set environment based on input
+      - name: Deploy to ${{ inputs.environment }} environment
+        run: |
+          echo "Deploying ${{ inputs.version_branch }} to ${{ inputs.environment }} environment"
+
+  conditional-deploy:
+    name: Conditional Deployment Based on Environment
+    runs-on: ubuntu-latest
+    needs: deploy
+
+    # Only deploy if specific conditions are met (e.g., specific branches or tags for specific environments)
+    steps:
+      - name: Deploy to Production (only for tags)
+        if: ${{ steps.set_envs.outputs.environment == 'prod' && github.ref_type == 'tag' }}
+        run: |
+          echo "Deploying tag to production"
+
+      - name: Deploy to Staging (only for staging branches)
+        if: ${{ steps.set_envs.outputs.environment == 'stg' && github.ref_type == 'branch' }}
+        run: |
+          echo "Deploying to staging"
+
+      - name: Deploy to Development (only for dev branches)
+        if: ${{ steps.set_envs.outputs.environment == 'dev' && github.ref_type == 'branch' }}
+        run: |
+          echo "Deploying to development"
